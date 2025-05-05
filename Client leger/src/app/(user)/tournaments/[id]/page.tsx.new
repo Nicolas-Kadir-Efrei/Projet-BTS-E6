@@ -1,0 +1,317 @@
+'use client';
+
+import { notFound } from 'next/navigation';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/lib/auth';
+import prisma from '@/lib/prisma';
+import type { AuthUser } from '@/lib/auth';
+import { Tournament, Team, TeamMember, User, Game, TournamentType, TournamentStatus } from '@prisma/client';
+import Link from 'next/link';
+import { useState, useEffect } from 'react';
+
+interface ExtendedSession {
+  user: AuthUser;
+}
+
+type TournamentWithDetails = Tournament & {
+  teams: (Team & {
+    members: (TeamMember & {
+      user: User;
+    })[];
+  })[];
+  creator: User;
+  game: Game;
+  tournamentType: TournamentType;
+  status: TournamentStatus[];
+};
+
+type TeamMemberWithUser = TeamMember & {
+  user: User;
+};
+
+type TournamentPageProps = {
+  params: { id: string };
+};
+
+export const dynamicParams = true;
+
+export default function TournamentPage({ params }: TournamentPageProps) {
+  const [tournament, setTournament] = useState<TournamentWithDetails | null>(null);
+  const [session, setSession] = useState<ExtendedSession | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const sessionData = await getServerSession(authOptions) as ExtendedSession;
+        if (!sessionData) throw new Error('Unauthorized');
+        setSession(sessionData);
+
+        const tournamentData = await prisma.tournament.findUnique({
+          where: { id: Number(params.id) },
+          include: {
+            teams: {
+              include: {
+                members: {
+                  include: {
+                    user: true
+                  }
+                }
+              }
+            },
+            creator: true,
+            game: true,
+            tournamentType: true,
+            status: true
+          }
+        }) as TournamentWithDetails | null;
+
+        if (!tournamentData) throw new Error('Tournament not found');
+        setTournament(tournamentData);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, [params.id]);
+
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error}</div>;
+  if (!tournament || !session) return notFound();
+
+  const userId = parseInt(session.user.id);
+  const isCreator = tournament.createdById === userId;
+  const isAdmin = session.user.role === "admin";
+  const isAlreadyCaptain = tournament.teams.some(
+    (team: Team & { members: TeamMemberWithUser[] }) => 
+      team.members.some(
+        (member: TeamMemberWithUser) => 
+          member.user.id === userId && member.role === "captain"
+      )
+  );
+  const hasPendingRequest = tournament.teams.some(
+    (team: Team & { members: TeamMemberWithUser[] }) =>
+      team.members.some(
+        (member: TeamMemberWithUser) => 
+          member.user.id === userId && member.role === "pending"
+      )
+  );
+
+  const startDate = new Date(tournament.startDate).toLocaleDateString('fr-FR', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  });
+
+  return (
+    <div className="min-h-screen bg-gray-100 py-8">
+      <div className="container mx-auto px-4">
+        {/* En-tête du tournoi */}
+        <div className="bg-white rounded-lg shadow-lg p-6 mb-8">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900 mb-2">{tournament.tournamentName}</h1>
+              <p className="text-gray-600">Créé par {tournament.creator.pseudo}</p>
+            </div>
+            {!isAlreadyCaptain && !hasPendingRequest && (
+              <button
+                className="mt-4 md:mt-0 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition duration-200"
+                onClick={async () => {
+                  const res = await fetch(`/api/tournaments/${tournament.id}/join`, {
+                    method: 'POST',
+                  });
+                  if (res.ok) window.location.reload();
+                }}
+              >
+                Rejoindre le tournoi
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div className="space-y-4">
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <h2 className="font-semibold text-lg text-gray-900 mb-3">Informations du jeu</h2>
+                <div className="space-y-2">
+                  <p><span className="font-medium">Jeu :</span> {tournament.game.name}</p>
+                  <p><span className="font-medium">Type :</span> {tournament.tournamentType.type}</p>
+                  <p><span className="font-medium">Format :</span> {tournament.format}</p>
+                </div>
+              </div>
+
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <h2 className="font-semibold text-lg text-gray-900 mb-3">Date et heure</h2>
+                <div className="space-y-2">
+                  <p><span className="font-medium">Date :</span> {startDate}</p>
+                  <p><span className="font-medium">Heure :</span> {tournament.startTime}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <h2 className="font-semibold text-lg text-gray-900 mb-3">Configuration</h2>
+                <div className="space-y-2">
+                  <p><span className="font-medium">Joueurs par équipe :</span> {tournament.playersPerTeam}</p>
+                  <p><span className="font-medium">Équipes minimum :</span> {tournament.minTeams}</p>
+                  <p><span className="font-medium">Participants maximum :</span> {tournament.maxParticipants}</p>
+                </div>
+              </div>
+
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <h2 className="font-semibold text-lg text-gray-900 mb-3">Règles</h2>
+                <p className="text-gray-700 whitespace-pre-wrap">{tournament.rules}</p>
+                {tournament.rewards && (
+                  <div className="mt-4">
+                    <h3 className="font-medium text-gray-900">Récompenses :</h3>
+                    <p className="text-gray-700">{tournament.rewards}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Liste des équipes */}
+        <div className="bg-white rounded-lg shadow-lg p-6">
+          <h2 className="text-2xl font-bold text-gray-900 mb-6">Équipes ({tournament.teams.length})</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {tournament.teams.map((team: Team & { members: TeamMemberWithUser[] }) => (
+              <div key={team.id} className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                <div className="flex justify-between items-start mb-4">
+                  <h3 className="text-xl font-semibold text-gray-900">{team.teamName}</h3>
+                  {team.members.length < tournament.playersPerTeam && !isAlreadyCaptain && !hasPendingRequest && (
+                    <button
+                      className="text-sm bg-green-600 hover:bg-green-700 text-white font-medium py-1 px-3 rounded transition duration-200"
+                      onClick={async () => {
+                        const res = await fetch(`/api/tournaments/${tournament.id}/teams/${team.id}/join`, {
+                          method: 'POST',
+                        });
+                        if (res.ok) window.location.reload();
+                      }}
+                    >
+                      Rejoindre
+                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="font-medium text-gray-900 mb-2">Capitaine</h4>
+                    {team.members.find((m: TeamMemberWithUser) => m.role === "captain") ? (
+                      <p className="text-gray-700">
+                        {team.members.find((m: TeamMemberWithUser) => m.role === "captain")?.user.pseudo}
+                      </p>
+                    ) : (
+                      <p className="text-gray-500 italic">Aucun capitaine</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <h4 className="font-medium text-gray-900 mb-2">
+                      Membres ({team.members.filter((m: TeamMemberWithUser) => m.role === "member").length}/{tournament.playersPerTeam})
+                    </h4>
+                    <ul className="space-y-1">
+                      {team.members
+                        .filter((m: TeamMemberWithUser) => m.role === "member")
+                        .map((member: TeamMemberWithUser) => (
+                          <li key={member.id} className="text-gray-700">
+                            {member.user.pseudo}
+                          </li>
+                        ))}
+                    </ul>
+                  </div>
+
+                  {team.members.some((m: TeamMemberWithUser) => m.role === "pending") && (
+                    <div>
+                      <h4 className="font-medium text-yellow-600 mb-2">Demandes en attente</h4>
+                      <ul className="space-y-1">
+                        {team.members
+                          .filter((m: TeamMemberWithUser) => m.role === "pending")
+                          .map((member: TeamMemberWithUser) => (
+                            <li key={member.id} className="text-gray-700 flex items-center justify-between">
+                              <span>{member.user.pseudo}</span>
+                              {(isCreator || isAdmin) && (
+                                <div className="flex space-x-2">
+                                  <button
+                                    onClick={async () => {
+                                      const res = await fetch(`/api/tournaments/${tournament.id}/teams/${team.id}/handle-request`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ action: 'accept', memberId: member.id })
+                                      });
+                                      if (res.ok) window.location.reload();
+                                    }}
+                                    className="text-xs bg-green-500 hover:bg-green-600 text-white px-2 py-1 rounded"
+                                  >
+                                    Accepter
+                                  </button>
+                                  <button
+                                    onClick={async () => {
+                                      const res = await fetch(`/api/tournaments/${tournament.id}/teams/${team.id}/handle-request`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ action: 'reject', memberId: member.id })
+                                      });
+                                      if (res.ok) window.location.reload();
+                                    }}
+                                    className="text-xs bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded"
+                                  >
+                                    Refuser
+                                  </button>
+                                </div>
+                              )}
+                            </li>
+                          ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="mt-8 space-y-4">
+          {isCreator && (
+            <div className="space-x-4">
+              <Link 
+                href={`/tournaments/${tournament.id}/edit`}
+                className="inline-block bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded"
+              >
+                Modifier le tournoi
+              </Link>
+              <button 
+                className="inline-block bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded"
+                onClick={async () => {
+                  if (window.confirm('Êtes-vous sûr de vouloir supprimer ce tournoi ?')) {
+                    const res = await fetch(`/api/tournaments/${tournament.id}`, {
+                      method: 'DELETE'
+                    });
+                    if (res.ok) window.location.href = '/tournaments';
+                  }
+                }}
+              >
+                Supprimer le tournoi
+              </button>
+            </div>
+          )}
+
+          {!session.user && (
+            <Link 
+              href="/login" 
+              className="block w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded text-center"
+            >
+              Connectez-vous pour participer
+            </Link>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

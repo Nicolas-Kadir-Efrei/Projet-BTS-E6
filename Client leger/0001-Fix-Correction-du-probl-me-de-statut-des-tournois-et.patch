@@ -1,0 +1,1159 @@
+From 2afc0f482352c2a5202c7b230bd6407bdd31ce3c Mon Sep 17 00:00:00 2001
+From: Kadir <nicolas.ciftci@efrei.net>
+Date: Fri, 25 Apr 2025 16:17:59 +0200
+Subject: [PATCH] =?UTF-8?q?Fix:=20Correction=20du=20probl=C3=A8me=20de=20s?=
+ =?UTF-8?q?tatut=20des=20tournois=20et=20de=20duplication=20dans=20la=20li?=
+ =?UTF-8?q?ste?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ src/app/admin/tournaments/[id]/edit/page.tsx | 500 ++++++++++++-------
+ src/app/api/admin/tournaments/[id]/route.ts  | 333 ++++++++++++
+ src/app/api/admin/tournaments/route.ts       | 204 ++++++++
+ 3 files changed, 850 insertions(+), 187 deletions(-)
+ create mode 100644 src/app/api/admin/tournaments/[id]/route.ts
+ create mode 100644 src/app/api/admin/tournaments/route.ts
+
+diff --git a/src/app/admin/tournaments/[id]/edit/page.tsx b/src/app/admin/tournaments/[id]/edit/page.tsx
+index 7060554..1cc6398 100644
+--- a/src/app/admin/tournaments/[id]/edit/page.tsx
++++ b/src/app/admin/tournaments/[id]/edit/page.tsx
+@@ -2,63 +2,116 @@
+ 
+ import { useState, useEffect } from 'react';
+ import { useRouter } from 'next/navigation';
+-import ProtectedRoute from '@/components/auth/ProtectedRoute';
++import { useAuth } from '@/contexts/AuthContext';
++import Link from 'next/link';
++import { use } from 'react';
+ 
+-interface PageProps {
+-  params: {
+-    id: string;
+-  };
++interface PageParams {
++  id: string;
+ }
+ 
+-export default function EditTournamentPage({ params }: PageProps) {
++export default function EditTournamentPage({ params }: { params: Promise<PageParams> }) {
++  // Utiliser React.use pour déballer les paramètres
++  const resolvedParams: PageParams = use(params);
++  const { user, loading: authLoading } = useAuth();
+   const router = useRouter();
+   const [formData, setFormData] = useState({
+-    name: '',
+-    type: '',
++    tournamentName: '',
++    format: '',
+     startDate: '',
+-    endDate: '',
++    startTime: '',
+     description: '',
+     maxParticipants: 8,
+-    registrationDeadline: '',
+     rules: '',
+     prizes: '',
+-    status: 'upcoming'
++    status: 'upcoming',
++    gameId: 0
+   });
++  const [games, setGames] = useState([]);
+   const [error, setError] = useState('');
+   const [loading, setLoading] = useState(false);
+   const [isLoading, setIsLoading] = useState(true);
+ 
+   useEffect(() => {
+-    const fetchTournament = async () => {
+-      try {
+-        const res = await fetch(`/api/admin/tournaments/${params.id}`);
+-        const data = await res.json();
+-
+-        if (!res.ok) {
+-          throw new Error(data.error || 'Une erreur est survenue');
+-        }
+-
+-        // Formater les dates pour l'input datetime-local
+-        const formatDate = (dateString: string) => {
+-          const date = new Date(dateString);
+-          return date.toISOString().slice(0, 16);
+-        };
++    if (!authLoading && (!user || user.role !== 'admin')) {
++      router.push('/login');
++      return;
++    }
++    
++    if (!authLoading && user && user.role === 'admin') {
++      fetchTournament();
++      fetchGames();
++    }
++  }, [authLoading, user, router, resolvedParams.id]);
+ 
+-        setFormData({
+-          ...data,
+-          startDate: formatDate(data.startDate),
+-          endDate: formatDate(data.endDate),
+-          registrationDeadline: formatDate(data.registrationDeadline),
+-        });
+-      } catch (err: any) {
+-        setError(err.message);
+-      } finally {
++  const fetchTournament = async () => {
++    try {
++      setIsLoading(true);
++      const token = localStorage.getItem('token') || '';
++      
++      if (!token) {
++        setError('Vous devez être connecté pour accéder à cette page');
+         setIsLoading(false);
++        return;
+       }
+-    };
+-
+-    fetchTournament();
+-  }, [params.id]);
++      
++      const response = await fetch(`/api/admin/tournaments/${resolvedParams.id}`, {
++        headers: {
++          'Authorization': `Bearer ${token}`
++        }
++      });
++      
++      if (!response.ok) {
++        const errorData = await response.json();
++        throw new Error(errorData.error || `Erreur ${response.status}`);
++      }
++      
++      const data = await response.json();
++      
++      const formatDate = (dateString: string) => {
++        const date = new Date(dateString);
++        return date.toISOString().split('T')[0];
++      };
++      
++      setFormData({
++        tournamentName: data.name,
++        format: data.type,
++        startDate: formatDate(data.startDate),
++        startTime: data.startTime,
++        description: data.description || '',
++        maxParticipants: data.maxParticipants,
++        rules: data.rules || '',
++        prizes: data.prizes || '',
++        status: data.status,
++        gameId: data.game?.id || 0
++      });
++    } catch (error) {
++      setError('Erreur lors du chargement du tournoi');
++    } finally {
++      setIsLoading(false);
++    }
++  };
++  
++  const fetchGames = async () => {
++    try {
++      const token = localStorage.getItem('token') || '';
++      
++      if (!token) return;
++      
++      const response = await fetch('/api/admin/games', {
++        headers: {
++          'Authorization': `Bearer ${token}`
++        }
++      });
++      
++      if (response.ok) {
++        const data = await response.json();
++        setGames(data);
++      }
++    } catch (error) {
++      console.error('Erreur lors du chargement des jeux');
++    }
++  };
+ 
+   const handleSubmit = async (e: React.FormEvent) => {
+     e.preventDefault();
+@@ -66,207 +119,280 @@ export default function EditTournamentPage({ params }: PageProps) {
+     setLoading(true);
+ 
+     try {
+-      const res = await fetch(`/api/admin/tournaments/${params.id}`, {
++      const token = localStorage.getItem('token') || '';
++      
++      if (!token) {
++        setError('Vous devez être connecté pour effectuer cette action');
++        setLoading(false);
++        return;
++      }
++      
++      // Adapter les données pour correspondre au schéma de l'API
++      const apiData = {
++        ...formData,
++        // Le champ rewards est utilisé dans l'API au lieu de prizes
++        rewards: formData.prizes,
++        // S'assurer que gameId est un nombre
++        gameId: Number(formData.gameId),
++        // S'assurer que le statut est explicitement inclus
++        status: formData.status
++      };
++      
++      console.log('Données envoyées à l\'API:', apiData);
++      
++      const res = await fetch(`/api/admin/tournaments/${resolvedParams.id}`, {
+         method: 'PUT',
+         headers: {
+           'Content-Type': 'application/json',
++          'Authorization': `Bearer ${token}`
+         },
+-        body: JSON.stringify(formData),
++        body: JSON.stringify(apiData),
+       });
+ 
+       const data = await res.json();
+ 
+       if (!res.ok) {
++        console.error('Erreur lors de la mise à jour:', data);
+         throw new Error(data.error || 'Une erreur est survenue');
+       }
+ 
+-      router.push('/admin/tournaments');
++      console.log('Tournoi mis à jour avec succès:', data);
++      router.push(`/admin/tournaments/${resolvedParams.id}`);
+     } catch (err: any) {
+-      setError(err.message);
++      console.error('Erreur lors de la soumission du formulaire:', err);
++      setError(err.message || 'Une erreur est survenue');
+     } finally {
+       setLoading(false);
+     }
+   };
+ 
+-  if (isLoading) {
++  if (authLoading || isLoading) {
+     return (
+-      <div className="flex justify-center items-center min-h-screen">
+-        <div className="text-xl">Chargement...</div>
++      <div className="min-h-screen flex items-center justify-center">
++        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+       </div>
+     );
+   }
+-
+-  return (
+-    <ProtectedRoute allowedRoles={['admin']}>
+-      <div className="container mx-auto px-4 py-8">
+-        <div className="max-w-3xl mx-auto bg-white shadow-lg rounded-lg p-6">
+-          <h1 className="text-2xl font-bold mb-6">Modifier le Tournoi</h1>
+-
+-          {error && (
+-            <div className="mb-4 bg-red-50 text-red-600 p-4 rounded">
+-              {error}
++  
++  if (error) {
++    return (
++      <div className="min-h-screen flex items-center justify-center">
++        <div className="bg-red-50 border-l-4 border-red-400 p-4 max-w-2xl">
++          <div className="flex">
++            <div className="flex-shrink-0">
++              <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
++                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
++              </svg>
+             </div>
+-          )}
+-
+-          <form onSubmit={handleSubmit} className="space-y-6">
+-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+-              <div>
+-                <label className="block text-sm font-medium text-gray-700 mb-2">
+-                  Nom du tournoi
+-                </label>
+-                <input
+-                  type="text"
+-                  required
+-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+-                  value={formData.name}
+-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+-                />
+-              </div>
+-
+-              <div>
+-                <label className="block text-sm font-medium text-gray-700 mb-2">
+-                  Type de tournoi
+-                </label>
+-                <select
+-                  required
+-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+-                  value={formData.type}
+-                  onChange={(e) => setFormData({ ...formData, type: e.target.value })}
+-                >
+-                  <option value="elimination">Élimination directe</option>
+-                  <option value="roundRobin">Round Robin</option>
+-                  <option value="swiss">Système Suisse</option>
+-                </select>
+-              </div>
+-
+-              <div>
+-                <label className="block text-sm font-medium text-gray-700 mb-2">
+-                  Statut
+-                </label>
+-                <select
+-                  required
+-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+-                  value={formData.status}
+-                  onChange={(e) => setFormData({ ...formData, status: e.target.value })}
+-                >
+-                  <option value="upcoming">À venir</option>
+-                  <option value="ongoing">En cours</option>
+-                  <option value="completed">Terminé</option>
+-                  <option value="cancelled">Annulé</option>
+-                </select>
++            <div className="ml-3">
++              <p className="text-sm text-red-700">{error}</p>
++              <div className="mt-4">
++                <Link href="/admin/tournaments" className="text-sm font-medium text-red-700 hover:text-red-600">
++                  Retour à la liste des tournois
++                </Link>
+               </div>
++            </div>
++          </div>
++        </div>
++      </div>
++    );
++  }
++  
++  if (!user || user.role !== 'admin') {
++    return null;
++  }
+ 
+-              <div>
+-                <label className="block text-sm font-medium text-gray-700 mb-2">
+-                  Date de début
+-                </label>
+-                <input
+-                  type="datetime-local"
+-                  required
+-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+-                  value={formData.startDate}
+-                  onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
+-                />
+-              </div>
++  return (
++    <div className="container mx-auto px-4 py-8">
++      <div className="max-w-3xl mx-auto bg-white shadow-lg rounded-lg p-6">
++        <div className="flex justify-between items-center mb-6">
++          <h1 className="text-2xl font-bold">Modifier le Tournoi</h1>
++          <Link
++            href={`/admin/tournaments/${resolvedParams.id}`}
++            className="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700 transition-colors"
++          >
++            Annuler
++          </Link>
++        </div>
+ 
+-              <div>
+-                <label className="block text-sm font-medium text-gray-700 mb-2">
+-                  Date de fin
+-                </label>
+-                <input
+-                  type="datetime-local"
+-                  required
+-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+-                  value={formData.endDate}
+-                  onChange={(e) => setFormData({ ...formData, endDate: e.target.value })}
+-                />
+-              </div>
++        {error && (
++          <div className="mb-4 bg-red-50 text-red-600 p-4 rounded">
++            {error}
++          </div>
++        )}
+ 
+-              <div>
+-                <label className="block text-sm font-medium text-gray-700 mb-2">
+-                  Nombre maximum de participants
+-                </label>
+-                <input
+-                  type="number"
+-                  required
+-                  min="2"
+-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+-                  value={formData.maxParticipants}
+-                  onChange={(e) => setFormData({ ...formData, maxParticipants: parseInt(e.target.value) })}
+-                />
+-              </div>
++        <form onSubmit={handleSubmit} className="space-y-6">
++          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
++            <div>
++              <label className="block text-sm font-medium text-gray-700 mb-2">
++                Nom du tournoi
++              </label>
++              <input
++                type="text"
++                required
++                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
++                value={formData.tournamentName}
++                onChange={(e) => setFormData({ ...formData, tournamentName: e.target.value })}
++              />
++            </div>
+ 
+-              <div>
+-                <label className="block text-sm font-medium text-gray-700 mb-2">
+-                  Date limite d'inscription
+-                </label>
+-                <input
+-                  type="datetime-local"
+-                  required
+-                  className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+-                  value={formData.registrationDeadline}
+-                  onChange={(e) => setFormData({ ...formData, registrationDeadline: e.target.value })}
+-                />
+-              </div>
++            <div>
++              <label className="block text-sm font-medium text-gray-700 mb-2">
++                Format du tournoi
++              </label>
++              <select
++                required
++                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
++                value={formData.format}
++                onChange={(e) => setFormData({ ...formData, format: e.target.value })}
++              >
++                <option value="elimination">Élimination directe</option>
++                <option value="roundRobin">Round Robin</option>
++                <option value="league">Ligue</option>
++                <option value="swiss">Système suisse</option>
++              </select>
+             </div>
+ 
+             <div>
+               <label className="block text-sm font-medium text-gray-700 mb-2">
+-                Description
++                Date de début
+               </label>
+-              <textarea
++              <input
++                type="date"
+                 required
+-                rows={4}
+-                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+-                value={formData.description}
+-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
++                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
++                value={formData.startDate}
++                onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
+               />
+             </div>
+ 
+             <div>
+               <label className="block text-sm font-medium text-gray-700 mb-2">
+-                Règlement
++                Heure de début
+               </label>
+-              <textarea
++              <input
++                type="time"
+                 required
+-                rows={4}
+-                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+-                value={formData.rules}
+-                onChange={(e) => setFormData({ ...formData, rules: e.target.value })}
++                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
++                value={formData.startTime}
++                onChange={(e) => setFormData({ ...formData, startTime: e.target.value })}
+               />
+             </div>
+ 
+             <div>
+               <label className="block text-sm font-medium text-gray-700 mb-2">
+-                Prix et récompenses
++                Nombre maximum de participants
+               </label>
+-              <textarea
+-                rows={4}
+-                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+-                value={formData.prizes}
+-                onChange={(e) => setFormData({ ...formData, prizes: e.target.value })}
++              <input
++                type="number"
++                required
++                min="2"
++                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
++                value={formData.maxParticipants}
++                onChange={(e) => setFormData({ ...formData, maxParticipants: parseInt(e.target.value) })}
+               />
+             </div>
+ 
+-            <div className="flex justify-end space-x-4">
+-              <button
+-                type="button"
+-                onClick={() => router.back()}
+-                className="px-4 py-2 border rounded-lg hover:bg-gray-50"
+-              >
+-                Annuler
+-              </button>
+-              <button
+-                type="submit"
+-                disabled={loading}
+-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
++            <div>
++              <label className="block text-sm font-medium text-gray-700 mb-2">
++                Jeu
++              </label>
++              <select
++                required
++                className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
++                value={formData.gameId}
++                onChange={(e) => setFormData({ ...formData, gameId: parseInt(e.target.value) })}
+               >
+-                {loading ? 'Enregistrement...' : 'Enregistrer les modifications'}
+-              </button>
++                <option value="">Sélectionner un jeu</option>
++                {games && games.length > 0 && games.map((game: any) => (
++                  <option key={game.id} value={game.id}>
++                    {game.name}
++                  </option>
++                ))}
++              </select>
+             </div>
+-          </form>
+-        </div>
++          </div>
++
++          <div>
++            <label className="block text-sm font-medium text-gray-700 mb-2">
++              Description
++            </label>
++            <textarea
++              rows={4}
++              className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
++              value={formData.description}
++              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
++            />
++          </div>
++
++          <div>
++            <label className="block text-sm font-medium text-gray-700 mb-2">
++              Règlement
++            </label>
++            <textarea
++              rows={4}
++              className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
++              value={formData.rules}
++              onChange={(e) => setFormData({ ...formData, rules: e.target.value })}
++            />
++          </div>
++
++          <div>
++            <label className="block text-sm font-medium text-gray-700 mb-2">
++              Prix et récompenses
++            </label>
++            <textarea
++              rows={4}
++              className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
++              value={formData.prizes}
++              onChange={(e) => setFormData({ ...formData, prizes: e.target.value })}
++            />
++          </div>
++          
++          <div>
++            <label className="block text-sm font-medium text-gray-700 mb-2">
++              Statut
++            </label>
++            <select
++              required
++              className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
++              value={formData.status}
++              onChange={(e) => setFormData({ ...formData, status: e.target.value })}
++            >
++              <option value="upcoming">À venir</option>
++              <option value="ongoing">En cours</option>
++              <option value="completed">Terminé</option>
++              <option value="cancelled">Annulé</option>
++            </select>
++          </div>
++
++          <div className="flex justify-end space-x-4">
++            <Link
++              href={`/admin/tournaments/${resolvedParams.id}`}
++              className="px-4 py-2 border rounded-lg hover:bg-gray-50"
++            >
++              Annuler
++            </Link>
++            <button
++              type="submit"
++              disabled={loading}
++              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center"
++            >
++              {loading ? (
++                <>
++                  <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
++                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
++                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
++                  </svg>
++                  Enregistrement...
++                </>
++              ) : (
++                'Enregistrer les modifications'
++              )}
++            </button>
++          </div>
++        </form>
+       </div>
+-    </ProtectedRoute>
++    </div>
+   );
+ }
+diff --git a/src/app/api/admin/tournaments/[id]/route.ts b/src/app/api/admin/tournaments/[id]/route.ts
+new file mode 100644
+index 0000000..af69b21
+--- /dev/null
++++ b/src/app/api/admin/tournaments/[id]/route.ts
+@@ -0,0 +1,333 @@
++import { NextRequest, NextResponse } from "next/server";
++import prisma from "@/lib/prisma";
++import { verifyToken } from "@/lib/auth";
++
++// GET: Récupérer un tournoi spécifique
++export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
++  console.log(`Début de la requête GET pour récupérer le tournoi ${params.id} (admin)`);
++  
++  // Récupérer le token d'autorisation
++  const authHeader = req.headers.get('authorization');
++  
++  if (!authHeader || !authHeader.startsWith('Bearer ')) {
++    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++  }
++  
++  const token = authHeader.substring(7); // Enlever 'Bearer '
++  
++  try {
++    // Vérifier et décoder le token
++    const userData = verifyToken(token);
++    
++    if (!userData || !userData.id) {
++      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++    }
++    
++    // Vérifier si l'utilisateur est un admin
++    const user = await prisma.user.findUnique({
++      where: { id: Number(userData.id) },
++      select: { role: true }
++    });
++    
++    if (!user || user.role !== 'admin') {
++      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
++    }
++    
++    // Récupérer le tournoi avec ses informations
++    console.log(`Tentative de récupération du tournoi avec l'ID: ${params.id}`);
++    
++    // Récupérer le tournoi avec ses informations
++    const tournament = await prisma.tournament.findUnique({
++      where: { id: Number(params.id) },
++      include: {
++        game: true,
++        creator: {
++          select: {
++            id: true,
++            name: true,
++            email: true
++          }
++        },
++        teams: true,
++        joinRequests: {
++          include: {
++            user: {
++              select: {
++                id: true,
++                name: true,
++                email: true,
++                pseudo: true
++              }
++            }
++          }
++        },
++        status: {
++          orderBy: {
++            updatedAt: 'desc'
++          },
++          take: 1
++        }
++      }
++    });
++    
++    console.log("Tournoi récupéré avec succès:", tournament ? "Trouvé" : "Non trouvé");
++    
++    if (!tournament) {
++      return NextResponse.json({ error: "Tournoi non trouvé" }, { status: 404 });
++    }
++    
++    // Formater les données pour le front-end
++    const currentStatus = tournament?.status?.length > 0 ? tournament.status[0].status : 'upcoming';
++    
++    // Calculer les participants à partir des équipes
++    const participants = [];
++    if (tournament.teams) {
++      for (const team of tournament.teams) {
++        // Nous n'avons pas accès aux membres de l'équipe directement, donc nous utilisons juste l'équipe
++        participants.push({
++          id: team.id,
++          name: team.teamName
++        });
++      }
++    }
++    
++    const formattedTournament = {
++      id: tournament.id,
++      name: tournament.tournamentName,
++      type: tournament.format,
++      status: currentStatus,
++      startDate: tournament.startDate.toISOString(),
++      startTime: tournament.startTime,
++      description: '', // Ce champ n'existe pas dans le schéma, on utilise une chaîne vide
++      rules: tournament.rules,
++      prizes: tournament.rewards || '',
++      participantsCount: participants.length,
++      maxParticipants: tournament.maxParticipants,
++      participants: participants,
++      pendingRequests: tournament.joinRequests?.map((jr: any) => ({
++        id: jr.id,
++        userId: jr.userId,
++        name: jr.user?.name || jr.user?.pseudo || jr.user?.email || 'Utilisateur inconnu',
++        requestDate: jr.createdAt
++      })) || [],
++      game: tournament.game ? {
++        id: tournament.game.id,
++        name: tournament.game.name,
++        image_path: tournament.game.image_path || ''
++      } : null,
++      createdBy: tournament.creator ? {
++        id: tournament.creator.id,
++        name: tournament.creator.name,
++        email: tournament.creator.email
++      } : null
++    };
++    
++    return NextResponse.json(formattedTournament);
++  } catch (error) {
++    console.error(`Erreur lors de la récupération du tournoi ${params.id}:`, error);
++    return NextResponse.json({ error: "Erreur serveur" }, { status: 500 });
++  }
++}
++
++// PUT: Mettre à jour un tournoi
++export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
++  console.log(`Début de la requête PUT pour mettre à jour le tournoi ${params.id}`);
++  
++  // Récupérer le token d'autorisation
++  const authHeader = req.headers.get('authorization');
++  
++  if (!authHeader || !authHeader.startsWith('Bearer ')) {
++    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++  }
++  
++  const token = authHeader.substring(7); // Enlever 'Bearer '
++  
++  try {
++    // Vérifier et décoder le token
++    const userData = verifyToken(token);
++    
++    if (!userData || !userData.id) {
++      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++    }
++    
++    // Vérifier si l'utilisateur est un admin
++    const user = await prisma.user.findUnique({
++      where: { id: Number(userData.id) },
++      select: { role: true }
++    });
++    
++    if (!user || user.role !== 'admin') {
++      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
++    }
++    
++    // Vérifier si le tournoi existe
++    const tournamentExists = await prisma.tournament.findUnique({
++      where: { id: Number(params.id) }
++    });
++    
++    if (!tournamentExists) {
++      return NextResponse.json({ error: "Tournoi non trouvé" }, { status: 404 });
++    }
++    
++    // Récupérer les données de mise à jour
++    const data = await req.json();
++    console.log('Données reçues pour la mise à jour:', data);
++    
++    // Préparer les données à mettre à jour
++    const updateData: any = {};
++    
++    if (data.tournamentName) updateData.tournamentName = data.tournamentName;
++    if (data.startDate) updateData.startDate = new Date(data.startDate);
++    if (data.startTime) updateData.startTime = data.startTime;
++    if (data.format) updateData.format = data.format;
++    if (data.maxParticipants) updateData.maxParticipants = Number(data.maxParticipants);
++    // Le champ description n'existe pas dans le schéma, nous l'ignorons
++    if (data.rules !== undefined) updateData.rules = data.rules;
++    // Utiliser rewards au lieu de prizes pour correspondre au schéma
++    if (data.prizes !== undefined) updateData.rewards = data.prizes;
++    if (data.gameId) updateData.gameId = Number(data.gameId);
++    
++    // Mettre à jour le statut si nécessaire
++    // Récupérer le statut actuel du tournoi
++    const tournamentStatus = await prisma.tournamentStatus.findMany({
++      where: { tournamentId: Number(params.id) },
++      orderBy: { updatedAt: 'desc' },
++      take: 1
++    });
++    
++    const currentStatus = tournamentStatus.length > 0 ? tournamentStatus[0].status : 'upcoming';
++    console.log('Statut actuel du tournoi:', currentStatus, 'Nouveau statut:', data.status);
++    
++    // Toujours mettre à jour le statut du tournoi s'il est fourni
++    if (data.status) {
++      console.log('Mise à jour du statut du tournoi de', currentStatus, 'à', data.status);
++      
++      try {
++        // D'abord, supprimer tous les anciens statuts pour éviter les doublons
++        await prisma.tournamentStatus.deleteMany({
++          where: { tournamentId: Number(params.id) }
++        });
++        
++        // Ensuite, créer un nouveau statut pour le tournoi
++        await prisma.tournamentStatus.create({
++          data: {
++            tournamentId: Number(params.id),
++            status: data.status,
++            updatedAt: new Date()
++          }
++        });
++        console.log('Statut du tournoi mis à jour avec succès');
++      } catch (statusError) {
++        console.error('Erreur lors de la mise à jour du statut:', statusError);
++        throw new Error(`Erreur lors de la mise à jour du statut: ${(statusError as Error).message}`);
++      }
++    }
++    
++    console.log('Données de mise à jour:', updateData);
++    
++    try {
++      // Mettre à jour le tournoi
++      const updatedTournament = await prisma.tournament.update({
++        where: { id: Number(params.id) },
++        data: updateData
++      });
++      
++      // Récupérer le tournoi mis à jour avec ses relations
++      const tournamentWithRelations = await prisma.tournament.findUnique({
++        where: { id: Number(params.id) },
++        include: {
++          game: true,
++          status: {
++            orderBy: {
++              updatedAt: 'desc'
++            },
++            take: 1
++          }
++        }
++      });
++      
++      console.log('Tournoi mis à jour avec succès');
++      return NextResponse.json(tournamentWithRelations);
++    
++    } catch (error) {
++      console.error(`Erreur lors de la mise à jour du tournoi ${params.id}:`, error);
++      return NextResponse.json({ error: "Erreur serveur: " + (error as Error).message }, { status: 500 });
++    }
++  } catch (error) {
++    console.error(`Erreur lors de la mise à jour du tournoi ${params.id}:`, error);
++    return NextResponse.json({ error: "Erreur serveur: " + (error as Error).message }, { status: 500 });
++  }
++}
++
++// DELETE: Supprimer un tournoi
++export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
++  console.log(`Début de la requête DELETE pour supprimer le tournoi ${params.id}`);
++  
++  // Récupérer le token d'autorisation
++  const authHeader = req.headers.get('authorization');
++  
++  if (!authHeader || !authHeader.startsWith('Bearer ')) {
++    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++  }
++  
++  const token = authHeader.substring(7); // Enlever 'Bearer '
++  
++  try {
++    // Vérifier et décoder le token
++    const userData = verifyToken(token);
++    
++    if (!userData || !userData.id) {
++      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++    }
++    
++    // Vérifier si l'utilisateur est un admin
++    const user = await prisma.user.findUnique({
++      where: { id: Number(userData.id) },
++      select: { role: true }
++    });
++    
++    if (!user || user.role !== 'admin') {
++      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
++    }
++    
++    // Vérifier si le tournoi existe
++    const tournament = await prisma.tournament.findUnique({
++      where: { id: Number(params.id) }
++    });
++    
++    if (!tournament) {
++      return NextResponse.json({ error: "Tournoi non trouvé" }, { status: 404 });
++    }
++    
++    // Supprimer les relations associées au tournoi
++    // Supprimer les statuts
++    await prisma.tournamentStatus.deleteMany({
++      where: { tournamentId: Number(params.id) }
++    });
++    
++    // Supprimer les demandes de participation
++    await prisma.joinRequest.deleteMany({
++      where: { tournamentId: Number(params.id) }
++    });
++    
++    // Supprimer les équipes (qui sont les participants)
++    await prisma.team.deleteMany({
++      where: { tournamentId: Number(params.id) }
++    });
++    
++    // Supprimer les équipes associées
++    await prisma.team.deleteMany({
++      where: { tournamentId: Number(params.id) }
++    });
++    
++    // Supprimer le tournoi
++    await prisma.tournament.delete({
++      where: { id: Number(params.id) }
++    });
++    
++    return NextResponse.json({ success: true });
++  } catch (error) {
++    console.error(`Erreur lors de la suppression du tournoi ${params.id}:`, error);
++    return NextResponse.json({ error: "Erreur serveur" }, { status: 500 });
++  }
++}
+diff --git a/src/app/api/admin/tournaments/route.ts b/src/app/api/admin/tournaments/route.ts
+new file mode 100644
+index 0000000..e8d5eae
+--- /dev/null
++++ b/src/app/api/admin/tournaments/route.ts
+@@ -0,0 +1,204 @@
++import { NextRequest, NextResponse } from "next/server";
++import prisma from "@/lib/prisma";
++import { verifyToken } from "@/lib/auth";
++
++// GET: Récupérer tous les tournois
++export async function GET(req: NextRequest) {
++  console.log("Début de la requête GET pour récupérer les tournois (admin)");
++  
++  // Récupérer le token d'autorisation
++  const authHeader = req.headers.get('authorization');
++  console.log('Header d\'autorisation présent:', !!authHeader);
++  
++  if (!authHeader || !authHeader.startsWith('Bearer ')) {
++    console.log('Erreur: Token d\'autorisation manquant ou mal formaté');
++    return NextResponse.json({ error: "Unauthorized - Token manquant ou mal formaté" }, { status: 401 });
++  }
++  
++  const token = authHeader.substring(7); // Enlever 'Bearer '
++  console.log('Token extrait du header');
++  
++  try {
++    // Vérifier et décoder le token
++    console.log('Vérification du token...');
++    const userData = verifyToken(token);
++    console.log('Token vérifié, données utilisateur:', userData ? 'Données présentes' : 'Données absentes');
++    
++    if (!userData || !userData.id) {
++      console.log('Erreur: Token invalide ou expiré');
++      return NextResponse.json({ error: "Unauthorized - Token invalide ou expiré" }, { status: 401 });
++    }
++    
++    // Vérifier si l'utilisateur est un admin
++    console.log('Vérification du rôle admin pour l\'utilisateur ID:', userData.id);
++    const user = await prisma.user.findUnique({
++      where: { id: Number(userData.id) },
++      select: { role: true, email: true }
++    });
++    
++    console.log('Utilisateur trouvé:', user ? `Email: ${user.email}, Rôle: ${user.role}` : 'Non trouvé');
++    
++    if (!user) {
++      console.log('Erreur: Utilisateur non trouvé dans la base de données');
++      return NextResponse.json({ error: "Unauthorized - Utilisateur non trouvé" }, { status: 401 });
++    }
++    
++    if (user.role !== 'admin') {
++      console.log('Erreur: L\'utilisateur n\'est pas un administrateur');
++      return NextResponse.json({ error: "Forbidden - Accès réservé aux administrateurs" }, { status: 403 });
++    }
++    
++    console.log('Récupération des tournois...');
++    try {
++      // Récupérer tous les tournois avec leurs informations de base
++      // Utiliser une sous-requête pour obtenir le dernier statut de chaque tournoi
++      const tournaments = await prisma.$queryRaw`
++        WITH latest_status AS (
++          SELECT DISTINCT ON ("tournamentId") "tournamentId", status
++          FROM tournament_status
++          ORDER BY "tournamentId", "updatedAt" DESC
++        )
++        SELECT 
++          t.id, t."tournamentName", t."startDate", t."startTime", t.format, t."maxParticipants",
++          g.id as "gameId", g.name as "gameName", g.image_path as "gameImagePath",
++          ls.status as status,
++          tt.type as "tournamentType"
++        FROM tournaments t
++        LEFT JOIN games g ON t."gameId" = g.id
++        LEFT JOIN latest_status ls ON t.id = ls."tournamentId"
++        LEFT JOIN tournament_types tt ON t."tournament_typeId" = tt.id
++        ORDER BY t."createdAt" DESC
++      `;
++      
++      console.log(`${Array.isArray(tournaments) ? tournaments.length : 0} tournois récupérés`);
++      
++      // Formater les données pour le front-end
++      const formattedTournaments = Array.isArray(tournaments) ? tournaments.map((tournament: any) => {
++        return {
++          id: tournament.id,
++          name: tournament.tournamentName,
++          type: tournament.format,
++          status: tournament.status || 'upcoming',  // Utiliser le statut récupéré de la requête SQL
++          startDate: new Date(tournament.startDate).toISOString(),
++          startTime: tournament.startTime,
++          maxParticipants: tournament.maxParticipants,
++          game: {
++            id: tournament.gameId,
++            name: tournament.gameName,
++            image_path: tournament.gameImagePath
++          }
++        };
++      }) : [];
++      
++      console.log('Tournois formatés:', formattedTournaments);
++      
++      return NextResponse.json(formattedTournaments);
++    } catch (error) {
++      console.error("Erreur détaillée lors de la récupération des tournois:", error);
++      return NextResponse.json({ error: "Erreur serveur lors de la récupération des tournois" }, { status: 500 });
++    }
++  } catch (error) {
++    console.error("Erreur lors de la récupération des tournois:", error);
++    return NextResponse.json({ error: "Erreur serveur" }, { status: 500 });
++  }
++}
++
++// POST: Créer un nouveau tournoi
++export async function POST(req: NextRequest) {
++  console.log("Début de la requête POST pour créer un tournoi");
++  
++  // Récupérer le token d'autorisation
++  const authHeader = req.headers.get('authorization');
++  
++  if (!authHeader || !authHeader.startsWith('Bearer ')) {
++    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++  }
++  
++  const token = authHeader.substring(7); // Enlever 'Bearer '
++  
++  try {
++    // Vérifier et décoder le token
++    const userData = verifyToken(token);
++    
++    if (!userData || !userData.id) {
++      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
++    }
++    
++    // Vérifier si l'utilisateur est un admin
++    const user = await prisma.user.findUnique({
++      where: { id: Number(userData.id) },
++      select: { role: true, id: true }
++    });
++    
++    if (!user || user.role !== 'admin') {
++      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
++    }
++    
++    // Récupérer les données du tournoi
++    const data = await req.json();
++    
++    // Validation des données
++    if (!data.tournamentName || !data.gameId || !data.startDate || !data.format || !data.maxParticipants) {
++      return NextResponse.json({ 
++        error: "Informations manquantes pour la création du tournoi" 
++      }, { status: 400 });
++    }
++    
++    // Vérifier si le jeu existe
++    const game = await prisma.game.findUnique({
++      where: { id: Number(data.gameId) }
++    });
++    
++    if (!game) {
++      return NextResponse.json({ error: "Jeu non trouvé" }, { status: 404 });
++    }
++    
++    // Créer le tournoi
++    const newTournament = await prisma.tournament.create({
++      data: {
++        tournamentName: data.tournamentName,
++        startDate: new Date(data.startDate),
++        startTime: data.startTime || "18:00",
++        format: data.format,
++        maxParticipants: Number(data.maxParticipants),
++        // Utiliser le champ 'rules' pour stocker la description si nécessaire
++        rules: data.rules || "",
++        // Utiliser le champ 'rewards' pour stocker les prix
++        rewards: data.prizes || "",
++        createdById: Number(userData.id),
++        gameId: Number(data.gameId),
++        // Ajouter les champs manquants requis par le schéma
++        minTeams: data.minTeams || 2,
++        playersPerTeam: data.playersPerTeam || 1,
++        totalPlayers: data.totalPlayers || Number(data.maxParticipants),
++        updatedAt: new Date(),
++        tournament_typeId: data.tournament_typeId || 1, // Valeur par défaut, à ajuster selon votre schéma
++      },
++      include: {
++        game: true,
++        status: true
++      }
++    });
++    
++    // Créer le statut initial du tournoi
++    try {
++      await prisma.tournamentStatus.create({
++        data: {
++          tournamentId: newTournament.id,
++          status: "upcoming",
++          updatedAt: new Date() // Champ requis par le schéma
++        }
++      });
++      
++      console.log(`Statut 'upcoming' créé pour le tournoi ${newTournament.id}`);
++    } catch (statusError) {
++      console.error("Erreur lors de la création du statut du tournoi:", statusError);
++      // On continue même si la création du statut échoue
++    }
++    
++    return NextResponse.json(newTournament, { status: 201 });
++  } catch (error) {
++    console.error("Erreur lors de la création du tournoi:", error);
++    return NextResponse.json({ error: "Erreur serveur" }, { status: 500 });
++  }
++}
+-- 
+2.46.0.windows.1
+

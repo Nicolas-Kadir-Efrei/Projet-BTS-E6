@@ -1,0 +1,112 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          Int          @id @default(autoincrement())
+  pseudo      String       @unique @db.VarChar(50)
+  name        String       @db.VarChar(50)
+  last_name   String       @db.VarChar(50)
+  email       String       @unique @db.VarChar(100)
+  password    String       @db.VarChar(255)
+  sexe        String       @db.Char(1)
+  birthday    DateTime     @db.Date
+  created_at  DateTime     @default(now()) @db.Timestamp()
+  last_auth   DateTime     @db.Timestamp()
+  role        String       @default("user") @db.VarChar(20)
+  teamMembers TeamMember[]
+}
+
+model Game {
+  id          Int          @id @default(autoincrement())
+  name        String       @unique @db.VarChar(50)
+  tournaments Tournament[]
+}
+
+model Tournament {
+  id                Int                @id @default(autoincrement())
+  tournamentName    String             @db.VarChar(100)
+  startDate         DateTime           @db.Timestamp()
+  startTime         String             @db.VarChar(5)
+  format            String             @db.VarChar(50)
+  rules             String             @db.Text
+  maxParticipants   Int
+  rewards           String?            @db.VarChar(255)
+  minTeams          Int
+  playersPerTeam    Int
+  totalPlayers      Int
+  createdAt         DateTime           @default(now()) @db.Timestamp()
+  updatedAt         DateTime           @db.Timestamp()
+  gameId            Int
+  tournament_typeId Int
+  game              Game               @relation(fields: [gameId], references: [id])
+  tournamentType    TournamentType     @relation(fields: [tournament_typeId], references: [id])
+  status            TournamentStatus[]
+  teams             Team[]
+  matches           Match[]
+}
+
+model TournamentType {
+  id          Int          @id @default(autoincrement())
+  type        String       @unique @db.VarChar(50)
+  tournaments Tournament[]
+}
+
+model TournamentStatus {
+  id           Int        @id @default(autoincrement())
+  tournamentId Int
+  status       String     @db.VarChar(20)
+  updatedAt    DateTime   @db.Timestamp()
+  tournament   Tournament @relation(fields: [tournamentId], references: [id])
+}
+
+model Team {
+  id             Int          @id @default(autoincrement())
+  teamName       String       @db.VarChar(100)
+  tournamentId   Int
+  createdAt      DateTime     @default(now()) @db.Timestamp()
+  tournament     Tournament   @relation(fields: [tournamentId], references: [id])
+  members        TeamMember[]
+  matchesAsTeam1 Match[]      @relation("Team1")
+  matchesAsTeam2 Match[]      @relation("Team2")
+}
+
+model TeamMember {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  teamId    Int
+  role      String   @db.VarChar(20)
+  joined_at DateTime @default(now()) @db.Timestamp()
+  user      User     @relation(fields: [userId], references: [id])
+  team      Team     @relation(fields: [teamId], references: [id])
+
+  @@unique([userId, teamId])
+}
+
+model Match {
+  id           Int        @id @default(autoincrement())
+  tournamentId Int
+  team1Id      Int
+  team2Id      Int
+  team1Score   Int?
+  team2Score   Int?
+  winnerId     Int?
+  matchDate    DateTime   @db.Timestamp()
+  status       String     @db.VarChar(20)
+  createdAt    DateTime   @default(now()) @db.Timestamp()
+  tournament   Tournament @relation(fields: [tournamentId], references: [id])
+  team1        Team       @relation("Team1", fields: [team1Id], references: [id])
+  team2        Team       @relation("Team2", fields: [team2Id], references: [id])
+}
