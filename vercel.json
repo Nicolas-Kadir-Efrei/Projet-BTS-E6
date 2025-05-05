@@ -1,7 +1,7 @@
 {
-  "buildCommand": "cd Client\\ leger && npm install && npm run build",
+  "buildCommand": "cd \"Client leger\" && npm install && npm run build",
   "outputDirectory": "Client leger/.next",
-  "installCommand": "cd Client\\ leger && npm install",
+  "installCommand": "cd \"Client leger\" && npm install",
   "framework": "nextjs",
   "rewrites": [
     {
