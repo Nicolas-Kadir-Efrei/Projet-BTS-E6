@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import prisma from "@/lib/prisma";
 import { redirect } from "next/navigation";
-import { TournamentForm } from "@/components/tournament-form";
+import TournamentForm from "@/components/tournament-form";
 import type { AuthUser } from "@/lib/auth";
 
 interface ExtendedSession {
@@ -21,18 +21,20 @@ export default async function EditTournamentPage({ params }: { params: { id: str
     where: { id: Number(params.id) },
     include: {
       game: true,
-      tournamentType: true,
-      status: true,
-      createdBy: true
+      tournamentType: true
     }
   });
+  
+  const creator = tournament ? await prisma.user.findUnique({
+    where: { id: tournament.createdById }
+  }) : null;
 
   if (!tournament) {
     redirect("/tournaments");
   }
 
   // Vérifier si l'utilisateur est le créateur ou un admin
-  if (tournament.createdBy.id !== user.id && user.role !== "admin") {
+  if (tournament.createdById !== user.id && user.role !== "admin") {
     redirect("/tournaments");
   }
 

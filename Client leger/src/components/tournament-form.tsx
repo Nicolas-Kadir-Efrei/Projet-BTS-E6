@@ -1,18 +1,20 @@
-import React, { useState, useEffect } from 'react';
+"use client";
+
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 interface TournamentFormProps {
   initialData?: any;
-  gameOptions?: any[];
-  tournamentTypeOptions?: any[];
-  isEdit?: boolean;
+  games?: any[];
+  tournamentTypes?: any[];
+  isEditing?: boolean;
 }
 
 export default function TournamentForm({ 
   initialData, 
-  gameOptions = [], 
-  tournamentTypeOptions = [],
-  isEdit = false 
+  games = [], 
+  tournamentTypes = [],
+  isEditing = false 
 }: TournamentFormProps) {
   const router = useRouter();
   const [formData, setFormData] = useState({
@@ -40,7 +42,7 @@ export default function TournamentForm({
     setError('');
 
     try {
-      const url = isEdit 
+      const url = isEditing 
         ? `/api/tournaments/${initialData.id}` 
         : '/api/tournaments';
       
@@ -167,7 +169,7 @@ export default function TournamentForm({
           className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
         >
           <option value="">Select a game</option>
-          {gameOptions.map((game) => (
+          {games.map((game: {id: string | number, name: string}) => (
             <option key={game.id} value={game.id}>
               {game.name}
             </option>
@@ -188,15 +190,15 @@ export default function TournamentForm({
           className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
         >
           <option value="">Select a tournament type</option>
-          {tournamentTypeOptions.map((type) => (
+          {tournamentTypes.map((type: {id: string | number, name?: string, type?: string}) => (
             <option key={type.id} value={type.id}>
-              {type.name}
+              {type.name || type.type}
             </option>
           ))}
         </select>
       </div>
 
-      {isEdit && (
+      {isEditing && (
         <div>
           <label htmlFor="status" className="block text-sm font-medium text-gray-700">
             Status
@@ -229,7 +231,7 @@ export default function TournamentForm({
           disabled={isLoading}
           className="inline-flex justify-center rounded-md border border-transparent bg-indigo-600 py-2 px-4 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
         >
-          {isLoading ? 'Saving...' : isEdit ? 'Update Tournament' : 'Create Tournament'}
+          {isLoading ? 'Saving...' : isEditing ? 'Update Tournament' : 'Create Tournament'}
         </button>
       </div>
     </form>
